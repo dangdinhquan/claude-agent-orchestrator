@@ -79,6 +79,27 @@ func migrate(db *sql.DB) error {
             FOREIGN KEY(profile_id) REFERENCES profiles(id),
             FOREIGN KEY(worker_id) REFERENCES workers(id)
         );`,
+        `CREATE TABLE IF NOT EXISTS session_bindings (
+            session_id TEXT PRIMARY KEY,
+            worker_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id),
+            FOREIGN KEY(worker_id) REFERENCES workers(id)
+        );`,
+        `CREATE TABLE IF NOT EXISTS audit_logs (
+            id TEXT PRIMARY KEY,
+            actor TEXT,
+            tenant_id TEXT,
+            profile_id TEXT,
+            session_id TEXT,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_sessions_worker ON sessions(worker_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_workers_profile ON workers(profile_id);`,
     }
 
     for _, stmt := range stmts {
