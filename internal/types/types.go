@@ -1,206 +1,83 @@
-package api
+package types
 
-import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "strconv"
-    "strings"
-    "time"
+import "time"
 
-    "github.com/dangdinhquan/claude-agent-orchestrator/internal/config"
-    "github.com/dangdinhquan/claude-agent-orchestrator/internal/types"
-    "github.com/dangdinhquan/claude-agent-orchestrator/internal/worker"
+type WorkerStatus string
+
+const (
+    WorkerRunning  WorkerStatus = "running"
+    WorkerStopped  WorkerStatus = "stopped"
+    WorkerUnhealthy WorkerStatus = "unhealthy"
 )
 
-type Server struct {
-    cfg     config.Config
-    manager *worker.Manager
-    server  *http.Server
+type Profile struct {
+    ID        string            `json:"id"`
+    TenantID  string            `json:"tenant_id"`
+    Name      string            `json:"name"`
+    LoginID   string            `json:"login_id"`
+    Status    string            `json:"status"`
+    ClaudePath string           `json:"claude_path"`
+    HomeDir   string            `json:"home_dir"`
+    ConfigDir string            `json:"config_dir"`
+    WorkDir   string            `json:"work_dir"`
+    LogDir    string            `json:"log_dir"`
+    SecretRef string            `json:"secret_ref,omitempty"`
+    Env       map[string]string `json:"env,omitempty"`
+    CreatedAt time.Time         `json:"created_at"`
+    UpdatedAt time.Time         `json:"updated_at"`
 }
 
-func NewServer(cfg config.Config) *Server {
-    return &Server{
-        cfg:     cfg,
-        manager: worker.NewManager(cfg),
-    }
+type CreateProfileRequest struct {
+    TenantID   string            `json:"tenant_id"`
+    Name       string            `json:"name"`
+    LoginID    string            `json:"login_id"`
+    ClaudePath string            `json:"claude_path,omitempty"`
+    Env        map[string]string `json:"env,omitempty"`
 }
 
-func (s *Server) Start() error {
-    mux := http.NewServeMux()
-    mux.HandleFunc("/v1/health", s.handleHealth)
-    mux.HandleFunc("/v1/profiles", s.handleProfiles)
-    mux.HandleFunc("/v1/workers", s.handleWorkers)
-    mux.HandleFunc("/v1/sessions", s.handleSessions)
-    mux.HandleFunc("/v1/sessions/", s.handleSessionRoutes)
-
-    s.server = &http.Server{
-        Addr:           ":" + strconv.Itoa(s.cfg.Port),
-        Handler:        mux,
-        ReadTimeout:    10 * time.Second,
-        WriteTimeout:   30 * time.Second,
-        IdleTimeout:    60 * time.Second,
-    }
-
-    return s.server.ListenAndServe()
+type Session struct {
+    ID        string            `json:"id"`
+    TenantID  string            `json:"tenant_id"`
+    ProfileID string            `json:"profile_id"`
+    WorkerID  string            `json:"worker_id,omitempty"`
+    Status    string            `json:"status"`
+    Metadata  map[string]string `json:"metadata,omitempty"`
+    CreatedAt time.Time         `json:"created_at"`
+    UpdatedAt time.Time         `json:"updated_at"`
+    ExpiresAt *time.Time        `json:"expires_at,omitempty"`
 }
 
-func (s *Server) Stop() error {
-    if s.server == nil {
-        return nil
-    }
-    return s.server.Close()
+type CreateSessionRequest struct {
+    TenantID  string            `json:"tenant_id"`
+    ProfileID string            `json:"profile_id"`
+    Metadata  map[string]string `json:"metadata,omitempty"`
+    ID        string            `json:"id,omitempty"`
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodGet {
-        w.WriteHeader(http.StatusMethodNotAllowed)
-        return
-    }
-    writeJSON(w, s.manager.Health())
+type MessageRequest struct {
+    Message string            `json:"message"`
+    Stream  bool              `json:"stream"`
+    Metadata map[string]string `json:"metadata,omitempty"`
 }
 
-func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
-    switch r.Method {
-    case http.MethodGet:
-        profiles := s.manager.ListProfiles()
-        writeJSON(w, profiles)
-    case http.MethodPost:
-        var req types.CreateProfileRequest
-        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-            writeError(w, http.StatusBadRequest, "invalid request payload")
-            return
-        }
-        profile, err := s.manager.CreateProfile(req)
-        if err != nil {
-            writeError(w, http.StatusBadRequest, err.Error())
-            return
-        }
-        writeJSON(w, profile)
-    default:
-        w.WriteHeader(http.StatusMethodNotAllowed)
-    }
+type Worker struct {
+    ID             string      `json:"id"`
+    ProfileID      string      `json:"profile_id"`
+    Hostname       string      `json:"hostname"`
+    PID            int         `json:"pid"`
+    Status         WorkerStatus `json:"status"`
+    ActiveSessions  int         `json:"active_sessions"`
+    QueueDepth     int         `json:"queue_depth"`
+    CPUUsage       float64     `json:"cpu_usage"`
+    MemoryUsage    uint64      `json:"memory_usage"`
+    LastHeartbeat  time.Time   `json:"last_heartbeat"`
+    CreatedAt      time.Time   `json:"created_at"`
+    ProcessStateID string      `json:"process_state_id,omitempty"`
 }
 
-func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodGet {
-        w.WriteHeader(http.StatusMethodNotAllowed)
-        return
-    }
-    writeJSON(w, s.manager.ListWorkers())
-}
-
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-    switch r.Method {
-    case http.MethodGet:
-        writeJSON(w, s.manager.ListSessions())
-    case http.MethodPost:
-        var req types.CreateSessionRequest
-        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-            writeError(w, http.StatusBadRequest, "invalid request payload")
-            return
-        }
-        session, err := s.manager.CreateSession(req)
-        if err != nil {
-            writeError(w, http.StatusServiceUnavailable, err.Error())
-            return
-        }
-        writeJSON(w, session)
-    default:
-        w.WriteHeader(http.StatusMethodNotAllowed)
-    }
-}
-
-func (s *Server) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
-    path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
-    parts := strings.Split(path, "/")
-    if len(parts) == 0 || parts[0] == "" {
-        w.WriteHeader(http.StatusNotFound)
-        return
-    }
-
-    sessionID := parts[0]
-    if len(parts) == 1 {
-        switch r.Method {
-        case http.MethodGet:
-            session, ok := s.manager.GetSession(sessionID)
-            if !ok {
-                writeError(w, http.StatusNotFound, "session not found")
-                return
-            }
-            writeJSON(w, session)
-        case http.MethodDelete:
-            // Placeholder: session cleanup would be implemented here.
-            writeJSON(w, map[string]string{"status": "deleted", "session_id": sessionID})
-        default:
-            w.WriteHeader(http.StatusMethodNotAllowed)
-        }
-        return
-    }
-
-    if len(parts) == 2 && parts[1] == "messages" {
-        switch r.Method {
-        case http.MethodPost:
-            var req types.MessageRequest
-            if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-                writeError(w, http.StatusBadRequest, "invalid message payload")
-                return
-            }
-
-            session, ok := s.manager.GetSession(sessionID)
-            if !ok {
-                writeError(w, http.StatusNotFound, "session not found")
-                return
-            }
-
-            workerID := session.WorkerID
-            if strings.TrimSpace(workerID) == "" {
-                workerID = "unassigned"
-            }
-
-            response := map[string]interface{}{
-                "session_id": session.ID,
-                "worker_id": workerID,
-                "status":    "accepted",
-                "message":   req.Message,
-            }
-
-            if req.Stream {
-                w.Header().Set("Content-Type", "text/event-stream")
-                w.Header().Set("Cache-Control", "no-cache")
-                w.Header().Set("Connection", "keep-alive")
-                _, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", mustMarshal(response))
-                _, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", mustMarshal(map[string]interface{}{"session_id": session.ID, "status": "complete"}))
-                return
-            }
-
-            writeJSON(w, response)
-        default:
-            w.WriteHeader(http.StatusMethodNotAllowed)
-        }
-        return
-    }
-
-    w.WriteHeader(http.StatusNotFound)
-}
-
-func writeJSON(w http.ResponseWriter, obj interface{}) {
-    w.Header().Set("Content-Type", "application/json")
-    if err := json.NewEncoder(w).Encode(obj); err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-    }
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(status)
-    _ = json.NewEncoder(w).Encode(map[string]interface{}{"error": msg, "status": status})
-}
-
-func mustMarshal(v interface{}) string {
-    b, err := json.Marshal(v)
-    if err != nil {
-        return `{}`
-    }
-    return string(b)
+type HealthStatus struct {
+    Status      string    `json:"status"`
+    Timestamp   time.Time `json:"timestamp"`
+    WorkersTotal int       `json:"workers_total"`
+    HealthyWorkers int      `json:"healthy_workers"`
 }
